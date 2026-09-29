@@ -1,0 +1,25 @@
+diff --git a/dlls/gdi32/uniscribe/usp10.c b/dlls/gdi32/uniscribe/usp10.c
+index 2880a5f..33012b5 100644
+--- a/dlls/gdi32/uniscribe/usp10.c
++++ b/dlls/gdi32/uniscribe/usp10.c
+@@ -3186,6 +3186,20 @@ HRESULT WINAPI ScriptShapeOpenType( HDC hdc, SCRIPT_CACHE *psc,
+         }
+         *pcGlyphs = g;
+ 
++        /* Like Windows, report a run the font has no glyphs for at all, so that
++         * callers (e.g. LPK) can fall back to font linking instead of drawing
++         * .notdef boxes; scripts without required OpenType features (e.g. Thai)
++         * would otherwise never fail here. */
++        if (g && psa->eScript != Script_Undefined && psa->eScript != Script_Control)
++        {
++            for (i = 0; i < g; i++) if (pwOutGlyphs[i]) break;
++            if (i == g)
++            {
++                free(rChars);
++                return USP_E_SCRIPT_NOT_IN_FONT;
++            }
++        }
++
+         hr = SHAPE_ContextualShaping(hdc, (ScriptCache *)*psc, psa, rChars, cChars, pwOutGlyphs, pcGlyphs, cMaxGlyphs, pwLogClust);
+         if (FAILED(hr))
+         {

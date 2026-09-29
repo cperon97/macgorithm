@@ -1,0 +1,110 @@
+diff --git a/dlls/appwiz.cpl/addons.c b/dlls/appwiz.cpl/addons.c
+index 76e369c..a01fd0f 100644
+--- a/dlls/appwiz.cpl/addons.c
++++ b/dlls/appwiz.cpl/addons.c
+@@ -56,10 +56,13 @@ WINE_DEFAULT_DEBUG_CHANNEL(appwizcpl);
+ #define GECKO_SHA "???"
+ #endif
+ 
+-#define MONO_VERSION "11.1.0"
++#define MONO_VERSION "11.3.0"
+ #if defined(__i386__) || defined(__x86_64__)
+ #define MONO_ARCH "x86"
+-#define MONO_SHA "deb0341431f8260b209fff6bc79ddcc5414b97f8e9236ab9fbdca4ce59e0a9b9"
++#define MONO_SHA "df2dfc1665c2511882e7cabd56eafd0c0a3d94e5a7e86f969277f6c189d418d3"
++#elif defined(__aarch64__)
++#define MONO_ARCH "arm64"
++#define MONO_SHA "b0c47d374efaf22cbff76cb10488ac2d1627b067e085aef7acec573884120e0f"
+ #else
+ #define MONO_ARCH ""
+ #define MONO_SHA "???"
+@@ -71,6 +74,7 @@ typedef struct {
+     const WCHAR *subdir_name;
+     const char *sha;
+     const char *url_default;
++    const char *arch;
+     const WCHAR *config_key;
+     const WCHAR *url_config_key;
+     const WCHAR *dir_config_key;
+@@ -87,6 +91,7 @@ static const addon_info_t addons_info[] = {
+         L"gecko",
+         GECKO_SHA,
+         "http://source.winehq.org/winegecko.php",
++        GECKO_ARCH,
+         L"MSHTML", L"GeckoUrl", L"GeckoCabDir",
+         MAKEINTRESOURCEW(ID_DWL_GECKO_DIALOG)
+     },
+@@ -96,6 +101,7 @@ static const addon_info_t addons_info[] = {
+         L"mono",
+         MONO_SHA,
+         "http://source.winehq.org/winemono.php",
++        MONO_ARCH,
+         L"Dotnet", L"MonoUrl", L"MonoCabDir",
+         MAKEINTRESOURCEW(ID_DWL_MONO_DIALOG)
+     }
+@@ -612,7 +618,7 @@ static void append_url_params( WCHAR *url )
+ 
+     lstrcpyW(url+len, L"?arch=");
+     len += lstrlenW(L"?arch=");
+-    len += MultiByteToWideChar(CP_ACP, 0, GECKO_ARCH, sizeof(GECKO_ARCH),
++    len += MultiByteToWideChar(CP_ACP, 0, addon->arch, strlen(addon->arch) + 1,
+                                url+len, size/sizeof(WCHAR)-len)-1;
+     lstrcpyW(url+len, L"&v=");
+     len += lstrlenW(L"&v=");
+@@ -752,11 +758,11 @@ static INT_PTR CALLBACK installer_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
+ 
+ BOOL install_addon(addon_t addon_type)
+ {
+-    if(!*GECKO_ARCH)
+-        return FALSE;
+-
+     addon = addons_info+addon_type;
+ 
++    if(!*addon->arch)
++        return FALSE;
++
+     p_wine_get_version = (void *)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version");
+ 
+     /*
+diff --git a/dlls/mscoree/metahost.c b/dlls/mscoree/metahost.c
+index eb609fc..262a985 100644
+--- a/dlls/mscoree/metahost.c
++++ b/dlls/mscoree/metahost.c
+@@ -710,11 +710,13 @@ HRESULT ICLRRuntimeInfo_GetRuntimeHost(ICLRRuntimeInfo *iface, RuntimeHost **res
+ }
+ 
+ #ifdef __i386__
+-static const WCHAR libmono2_arch_dll[] = {'\\','b','i','n','\\','l','i','b','m','o','n','o','-','2','.','0','-','x','8','6','.','d','l','l',0};
++static const WCHAR libmono2_arch_dll[] = L"\\bin\\libmono-2.0-x86.dll";
+ #elif defined(__x86_64__)
+-static const WCHAR libmono2_arch_dll[] = {'\\','b','i','n','\\','l','i','b','m','o','n','o','-','2','.','0','-','x','8','6','_','6','4','.','d','l','l',0};
++static const WCHAR libmono2_arch_dll[] = L"\\bin\\libmono-2.0-x86_64.dll";
++#elif defined(__aarch64__)
++static const WCHAR libmono2_arch_dll[] = L"\\bin\\libmono-2.0-arm64.dll";
+ #else
+-static const WCHAR libmono2_arch_dll[] = {'\\','b','i','n','\\','l','i','b','m','o','n','o','-','2','.','0','.','d','l','l',0};
++static const WCHAR libmono2_arch_dll[] = L"\\bin\\libmono-2.0.dll";
+ #endif
+ 
+ static BOOL find_mono_dll(LPCWSTR path, LPWSTR dll_path)
+diff --git a/dlls/mscoree/mscoree_private.h b/dlls/mscoree/mscoree_private.h
+index c9fd0b7..f4638b9 100644
+--- a/dlls/mscoree/mscoree_private.h
++++ b/dlls/mscoree/mscoree_private.h
+@@ -45,7 +45,7 @@ extern HRESULT assembly_get_runtime_version(ASSEMBLY *assembly, LPSTR *version);
+ extern HRESULT assembly_get_vtable_fixups(ASSEMBLY *assembly, VTableFixup **fixups, DWORD *count);
+ extern HRESULT assembly_get_native_entrypoint(ASSEMBLY *assembly, NativeEntryPointFunc *func);
+ 
+-#define WINE_MONO_VERSION "11.1.0"
++#define WINE_MONO_VERSION "11.3.0"
+ 
+ /* Mono embedding */
+ typedef struct _MonoDomain MonoDomain;
+@@ -124,6 +124,7 @@ typedef struct supported_runtime
+ {
+     struct list entry;
+     LPWSTR version;
++    LPWSTR sku;
+ } supported_runtime;
+ 
+ extern WCHAR **private_path;

@@ -1,0 +1,7 @@
+Flowgorithm for macOS — UNOFFICIAL wrapper.
+
+Flowgorithm is freeware by Devin Cook (https://www.flowgorithm.org).
+This package is not affiliated with or endorsed by the author: it contains the
+official, unmodified Windows executable, run with Wine (LGPL, https://www.winehq.org)
+and Wine Mono (https://github.com/wine-mono/wine-mono).
+Third-party licenses: see the "licenses" folder.

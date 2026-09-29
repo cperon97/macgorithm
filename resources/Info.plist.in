@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key><string>Flowgorithm</string>
+	<key>CFBundleDisplayName</key><string>Flowgorithm</string>
+	<key>CFBundleExecutable</key><string>Flowgorithm</string>
+	<key>CFBundleIdentifier</key><string>@BUNDLE_ID@</string>
+	<key>CFBundleShortVersionString</key><string>@VERSION@</string>
+	<key>CFBundleVersion</key><string>@VERSION@</string>
+	<key>CFBundlePackageType</key><string>APPL</string>
+	<key>CFBundleIconFile</key><string>Flowgorithm</string>
+	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+	<key>LSMinimumSystemVersion</key><string>@MIN_MACOS@</string>
+	<key>LSApplicationCategoryType</key><string>public.app-category.education</string>
+	<key>LSUIElement</key><true/>
+	<key>NSHighResolutionCapable</key><true/>
+	<key>NSHumanReadableCopyright</key><string>Flowgorithm © Devin Cook. Unofficial macOS wrapper, not affiliated with the author.</string>
+	<key>MGWinePrefix</key><string>@PREFIX@</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key><string>Flowgorithm Program</string>
+			<key>CFBundleTypeRole</key><string>Editor</string>
+			<key>LSHandlerRank</key><string>Owner</string>
+			<key>CFBundleTypeIconFile</key><string>Flowgorithm</string>
+			<key>LSItemContentTypes</key><array><string>org.flowgorithm.fprg</string></array>
+		</dict>
+	</array>
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key><string>org.flowgorithm.fprg</string>
+			<key>UTTypeDescription</key><string>Flowgorithm Program</string>
+			<key>UTTypeConformsTo</key><array><string>public.xml</string><string>public.data</string></array>
+			<key>UTTypeIconFile</key><string>Flowgorithm</string>
+			<key>UTTypeTagSpecification</key>
+			<dict><key>public.filename-extension</key><array><string>fprg</string></array></dict>
+		</dict>
+	</array>
+</dict>
+</plist>

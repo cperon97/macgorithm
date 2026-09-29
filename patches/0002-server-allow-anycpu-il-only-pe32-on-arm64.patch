@@ -1,0 +1,44 @@
+diff --git a/server/mapping.c b/server/mapping.c
+index 65f8093..f7ca1fe 100644
+--- a/server/mapping.c
++++ b/server/mapping.c
+@@ -886,6 +886,7 @@ static unsigned int get_image_params( struct mapping *mapping, file_pos_t file_s
+     IMAGE_DATA_DIRECTORY *data_dirs, *exp_dir, *res_dir, *cfg_dir, *clr_dir;
+     size_t mz_size, align_mask;
+     unsigned int i, ret, nb_data_dirs;
++    int unsupported_32bit = 0;
+ 
+     /* load the headers */
+ 
+@@ -912,7 +913,10 @@ static unsigned int get_image_params( struct mapping *mapping, file_pos_t file_s
+     {
+     case IMAGE_NT_OPTIONAL_HDR32_MAGIC:
+         if (!is_machine_32bit( nt.FileHeader.Machine )) return STATUS_INVALID_IMAGE_FORMAT;
+-        if (!is_machine_supported( nt.FileHeader.Machine )) return STATUS_INVALID_IMAGE_FORMAT;
++        /* IL-only (AnyCPU) .NET images can still run as native 64-bit processes even
++         * when the 32-bit machine is not supported (e.g. aarch64-only builds); the
++         * decision is taken below once the CLR header has been read. */
++        if (!is_machine_supported( nt.FileHeader.Machine )) unsupported_32bit = 1;
+ 
+         if (nt.FileHeader.Machine != IMAGE_FILE_MACHINE_I386)  /* non-x86 platforms are more strict */
+         {
+@@ -1061,6 +1065,19 @@ static unsigned int get_image_params( struct mapping *mapping, file_pos_t file_s
+         }
+     }
+ 
++    if (unsupported_32bit && !(mapping->image.image_flags & IMAGE_FLAGS_ComPlusNativeReady))
++    {
++        /* like is_com_ilonly() in the PE loader, accept IL-only images regardless
++         * of the COR header runtime version (some old assemblies use 2.0) */
++        IMAGE_COR20_HEADER cor;
++        int len = clr_dir ? load_data_dir( &cor, sizeof(cor), clr_dir->VirtualAddress, clr_dir->Size,
++                                           align_mask, unix_fd, sec, nt.FileHeader.NumberOfSections ) : 0;
++        ret = STATUS_INVALID_IMAGE_FORMAT;
++        if (len < (int)(offsetof( IMAGE_COR20_HEADER, Flags ) + sizeof(cor.Flags))) goto done;
++        if (!(cor.Flags & COMIMAGE_FLAGS_ILONLY) || (cor.Flags & COMIMAGE_FLAGS_32BITREQUIRED)) goto done;
++        mapping->image.image_flags |= IMAGE_FLAGS_ComPlusILOnly | IMAGE_FLAGS_ComPlusNativeReady;
++    }
++
+     if (cfg_dir && load_cfg_header( &cfg.cfg64, cfg_dir, align_mask,
+                                     unix_fd, sec, nt.FileHeader.NumberOfSections ))
+     {

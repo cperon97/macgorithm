@@ -1,0 +1,225 @@
+diff --git a/dlls/comdlg32/itemdlg.c b/dlls/comdlg32/itemdlg.c
+index c12ae22..84aff6f 100644
+--- a/dlls/comdlg32/itemdlg.c
++++ b/dlls/comdlg32/itemdlg.c
+@@ -23,6 +23,7 @@
+ #define COBJMACROS
+ #include "windef.h"
+ #include "winbase.h"
++#include "winternl.h"
+ #include "winuser.h"
+ #include "wingdi.h"
+ #include "winreg.h"
+@@ -2519,13 +2520,212 @@ static ULONG WINAPI IFileDialog2_fnRelease(IFileDialog2 *iface)
+     return ref;
+ }
+ 
++/**************************************************************************
++ * macOS native file panel.
++ *
++ * When the MACGORITHM_FILE_PANEL environment variable names a host helper
++ * executable, the dialog is shown with the native NSOpenPanel/NSSavePanel
++ * instead of the Wine dialog.  The helper is invoked as
++ *   helper open|save|folder --out FILE [--title T] [--dir D] [--name N] [--types ext,ext]
++ * writes the chosen host path to FILE and exits 0 (1 when cancelled).
++ * Anything unsupported returns E_NOTIMPL and falls back to the Wine dialog.
++ */
++static char *macpanel_utf8(const WCHAR *str)
++{
++    char *ret;
++    int len;
++
++    if (!str || !*str) return NULL;
++    len = WideCharToMultiByte(CP_UTF8, 0, str, -1, NULL, 0, NULL, NULL);
++    if ((ret = malloc(len))) WideCharToMultiByte(CP_UTF8, 0, str, -1, ret, len, NULL, NULL);
++    return ret;
++}
++
++static char *macpanel_host_path(const WCHAR *dos_path)
++{
++    char *unix_path, *ret = NULL;
++
++    if ((unix_path = wine_get_unix_file_name(dos_path)))
++    {
++        ret = strdup(unix_path);
++        HeapFree(GetProcessHeap(), 0, unix_path);
++    }
++    return ret;
++}
++
++static char *macpanel_initial_dir(FileDialogImpl *This)
++{
++    IShellItem *psi = This->psi_setfolder ? This->psi_setfolder : This->psi_defaultfolder;
++    WCHAR *path;
++    char *ret;
++
++    if (!psi || FAILED(IShellItem_GetDisplayName(psi, SIGDN_FILESYSPATH, &path))) return NULL;
++    ret = macpanel_host_path(path);
++    CoTaskMemFree(path);
++    return ret;
++}
++
++/* extensions of the current filter as "ext1,ext2"; NULL when any file is allowed */
++static char *macpanel_types(FileDialogImpl *This)
++{
++    WCHAR buf[512];
++    const WCHAR *p;
++    UINT idx, len = 0;
++
++    if (!This->filterspec_count) return NULL;
++    idx = This->filetypeindex ? This->filetypeindex - 1 : 0;
++    if (idx >= This->filterspec_count) idx = 0;
++
++    for (p = This->filterspecs[idx].pszSpec; p && *p;)
++    {
++        const WCHAR *end = wcschr(p, ';');
++        UINT n = end ? end - p : wcslen(p);
++
++        while (n && *p == ' ') { p++; n--; }
++        while (n && p[n - 1] == ' ') n--;
++        if (n == 1 && p[0] == '*') return NULL;
++        if (n >= 3 && p[0] == '*' && p[1] == '.')
++        {
++            if (n == 3 && p[2] == '*') return NULL;
++            if (len + n >= ARRAY_SIZE(buf)) return NULL;
++            if (len) buf[len++] = ',';
++            memcpy(buf + len, p + 2, (n - 2) * sizeof(WCHAR));
++            len += n - 2;
++        }
++        if (!end) break;
++        p = end + 1;
++    }
++    buf[len] = 0;
++    return macpanel_utf8(buf);
++}
++
++static WCHAR *macpanel_read_result(const WCHAR *file)
++{
++    char buf[4096];
++    DWORD size = 0;
++    HANDLE handle;
++
++    handle = CreateFileW(file, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
++    if (handle == INVALID_HANDLE_VALUE) return NULL;
++    ReadFile(handle, buf, sizeof(buf) - 1, &size, NULL);
++    CloseHandle(handle);
++    while (size && (buf[size - 1] == '\n' || buf[size - 1] == '\r')) size--;
++    if (!size) return NULL;
++    buf[size] = 0;
++    return wine_get_dos_file_name(buf);
++}
++
++static HRESULT macpanel_set_result(FileDialogImpl *This, const WCHAR *path)
++{
++    IShellFolder *psf_desktop;
++    LPITEMIDLIST pidl;
++    HRESULT hr;
++
++    if (!(pidl = SHSimpleIDListFromPath(path))) return E_FAIL;
++    if (SUCCEEDED(hr = SHGetDesktopFolder(&psf_desktop)))
++    {
++        if (This->psia_results)
++        {
++            IShellItemArray_Release(This->psia_results);
++            This->psia_results = NULL;
++        }
++        hr = SHCreateShellItemArray(NULL, psf_desktop, 1, (PCUITEMID_CHILD_ARRAY)&pidl, &This->psia_results);
++        IShellFolder_Release(psf_desktop);
++    }
++    ILFree(pidl);
++    return hr;
++}
++
++static HRESULT macpanel_show(FileDialogImpl *This, HWND owner)
++{
++    WCHAR helper_path[MAX_PATH], temp_dir[MAX_PATH], temp_file[MAX_PATH];
++    char *helper, *out, *title, *dir, *name, *types;
++    const char *argv[14];
++    HRESULT hr = E_NOTIMPL;
++    int argc = 0, tries;
++
++    if (!GetEnvironmentVariableW(L"MACGORITHM_FILE_PANEL", helper_path, ARRAY_SIZE(helper_path)))
++        return E_NOTIMPL;
++    if ((This->options & FOS_ALLOWMULTISELECT) || !list_empty(&This->cctrls)) return E_NOTIMPL;
++    if (!GetTempPathW(ARRAY_SIZE(temp_dir), temp_dir) || !GetTempFileNameW(temp_dir, L"mfp", 0, temp_file))
++        return E_NOTIMPL;
++
++    helper = macpanel_utf8(helper_path);
++    out = macpanel_host_path(temp_file);
++    title = macpanel_utf8(This->custom_title);
++    dir = macpanel_initial_dir(This);
++    name = macpanel_utf8(This->set_filename);
++    types = macpanel_types(This);
++
++    argv[argc++] = helper;
++    argv[argc++] = (This->options & FOS_PICKFOLDERS) ? "folder" :
++                   This->dlg_type == ITEMDLG_TYPE_SAVE ? "save" : "open";
++    argv[argc++] = "--out";
++    argv[argc++] = out;
++    if (title) { argv[argc++] = "--title"; argv[argc++] = title; }
++    if (dir)   { argv[argc++] = "--dir";   argv[argc++] = dir; }
++    if (name)  { argv[argc++] = "--name";  argv[argc++] = name; }
++    if (types) { argv[argc++] = "--types"; argv[argc++] = types; }
++    argv[argc] = NULL;
++
++    if (helper && out)
++    {
++        if (owner) EnableWindow(owner, FALSE);
++        for (tries = 0; tries < 16; tries++)
++        {
++            NTSTATUS status = __wine_unix_spawnvp((char **)argv, TRUE);
++            WCHAR *path;
++
++            TRACE("helper returned %#lx\n", status);
++            if (status == 1) { hr = HRESULT_FROM_WIN32(ERROR_CANCELLED); break; }
++            if (status || !(path = macpanel_read_result(temp_file)))
++            {
++                if (!tries) hr = E_NOTIMPL; /* helper unusable: fall back to the Wine dialog */
++                else hr = HRESULT_FROM_WIN32(ERROR_CANCELLED);
++                break;
++            }
++            if (This->dlg_type == ITEMDLG_TYPE_SAVE && This->default_ext && !*PathFindExtensionW(path) &&
++                !types)
++            {
++                WCHAR *tmp = HeapAlloc(GetProcessHeap(), 0, (lstrlenW(path) + lstrlenW(This->default_ext) + 2) * sizeof(WCHAR));
++                if (tmp)
++                {
++                    lstrcpyW(tmp, path);
++                    lstrcatW(tmp, L".");
++                    lstrcatW(tmp, This->default_ext);
++                    HeapFree(GetProcessHeap(), 0, path);
++                    path = tmp;
++                }
++            }
++            TRACE("selected %s\n", debugstr_w(path));
++            hr = macpanel_set_result(This, path);
++            HeapFree(GetProcessHeap(), 0, path);
++            if (FAILED(hr)) break;
++            /* the application may reject the choice (S_FALSE): ask again */
++            if (events_OnFileOk(This) != S_FALSE) { hr = S_OK; break; }
++            hr = HRESULT_FROM_WIN32(ERROR_CANCELLED);
++        }
++        if (owner)
++        {
++            EnableWindow(owner, TRUE);
++            SetForegroundWindow(owner);
++        }
++    }
++
++    DeleteFileW(temp_file);
++    free(helper); free(out); free(title); free(dir); free(name); free(types);
++    return hr;
++}
++
+ static HRESULT WINAPI IFileDialog2_fnShow(IFileDialog2 *iface, HWND hwndOwner)
+ {
+     FileDialogImpl *This = impl_from_IFileDialog2(iface);
++    HRESULT hr;
+     TRACE("%p (%p)\n", iface, hwndOwner);
+ 
+     This->opendropdown_has_selection = FALSE;
+ 
++    if ((hr = macpanel_show(This, hwndOwner)) != E_NOTIMPL) return hr;
+     return create_dialog(This, hwndOwner);
+ }
+ 

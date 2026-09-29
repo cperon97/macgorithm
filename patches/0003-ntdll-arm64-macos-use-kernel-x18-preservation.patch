@@ -1,0 +1,98 @@
+diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+index d156f35..5c21ede 100644
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -34,6 +34,10 @@
+ #include <stdio.h>
+ #include <sys/types.h>
+ #include <unistd.h>
++#ifdef __APPLE__
++# include <dlfcn.h>
++# include <stdbool.h>
++#endif
+ #ifdef HAVE_SYS_PARAM_H
+ # include <sys/param.h>
+ #endif
+@@ -811,6 +815,56 @@ static inline void set_teb_register( struct thread_data *data )
+     if (data && data->teb) pthread_setspecific( teb_pthread_key, data->teb );
+ }
+ 
++/* XNU preserves x18 across exceptions/context switches for a thread when bit 48
++ * of TPIDR_EL0 (MACHDEP_TPIDR_FLAG_PRESERVE_X18) is set.  That happens for tasks
++ * linked against a pre-13.0 SDK ("legacy" override) and, on macOS 26.4+, for
++ * threads that called os_set_custom_x18_abi_enabled(true) in a task carrying the
++ * com.apple.security.custom-x18-abi-toggle entitlement.  In that mode the kernel
++ * restores x18 from the signal context on sigreturn, exactly like Linux, so the
++ * trampoline detour below (which clobbers x16, breaking JIT code that uses
++ * x16/x17 as branch registers) must not be used. */
++static BOOL x18_preserved_by_task;
++
++static inline BOOL kernel_preserves_x18(void)
++{
++    ULONG64 tpidr;
++    if (x18_preserved_by_task) return TRUE;
++    __asm__ __volatile__( "mrs %0, tpidr_el0" : "=r" (tpidr) );
++    return (tpidr >> 48) & 1;
++}
++
++/* Task-wide preservation (pre-13.0 SDK override) is not reflected in TPIDR_EL0
++ * on macOS 14/15, so probe it: every exception return, syscalls included,
++ * zeroes x18 unless the kernel preserves it for this task. */
++static void probe_x18_preservation(void)
++{
++    static const ULONG64 magic = 0x5ee5ee5ee5ee5ee5ull;
++    ULONG64 val;
++
++    __asm__ __volatile__( "mov x18, %1\n\t"
++                          "mov x16, #20\n\t"   /* SYS_getpid */
++                          "svc #0x80\n\t"
++                          "mov %0, x18"
++                          : "=r" (val) : "r" (magic) : "x0", "x1", "x16", "memory", "cc" );
++    x18_preserved_by_task = (val == magic);
++}
++
++/* Opt the current thread into the macOS 26.4+ custom x18 ABI (no-op when the
++ * kernel already preserves x18 or the API is unavailable). */
++static void enable_x18_preservation(void)
++{
++    static void (*p_set)(bool);
++    static int initialized;
++
++    if (kernel_preserves_x18()) return;
++    if (!initialized)
++    {
++        p_set = dlsym( RTLD_DEFAULT, "os_set_custom_x18_abi_enabled" );
++        initialized = 1;
++    }
++    if (p_set) p_set( true );
++}
++
+ /* redirect a signal resume through the x18 trampoline */
+ static inline void redirect_user_resume( ucontext_t *sigcontext )
+ {
+@@ -819,6 +873,7 @@ static inline void redirect_user_resume( ucontext_t *sigcontext )
+     if (!data || !data->teb) return;
+     /* keep TPIDR_EL0 == TEB current for this thread */
+     set_teb_register( data );
++    if (kernel_preserves_x18()) return;
+     /* If a signal interrupted the x18 trampoline itself, do NOT overwrite the
+      * single signal_resume_pc slot (that would lose the real resume target).
+      * Resuming mid-trampoline is also unsafe — the just-taken sigreturn zeroed
+@@ -1765,6 +1820,7 @@ void signal_init_process( TEB *teb )
+ 
+ #ifdef __APPLE__
+     init_teb_tsd_slot();
++    probe_x18_preservation();
+ #endif
+     alloc_syscall_frame( sizeof(struct syscall_frame) );
+     signal_alloc_thread( teb );
+@@ -1813,6 +1869,9 @@ void syscall_dispatcher_return_slowpath(void)
+ void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, TEB *teb )
+ {
+     struct thread_data *data = get_thread_data();
++#ifdef __APPLE__
++    enable_x18_preservation();
++#endif
+     struct syscall_frame *frame = get_syscall_frame( data );
+     CONTEXT *ctx, context = { CONTEXT_ALL };
+     I386_CONTEXT *i386_context;
